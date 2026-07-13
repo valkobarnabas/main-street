@@ -3,7 +3,7 @@ import type { Rect } from "./clip";
 import type { ViewBounds } from "../types";
 
 /** Longest view side allowed for a playable round (meters). */
-export const MAX_VIEW_SIDE_METERS = 550;
+export const MAX_VIEW_SIDE_METERS = 3000;
 
 export type ValidationResult =
   | { ok: true }
