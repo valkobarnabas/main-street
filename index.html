@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Street Dots</title>
+  </head>
+  <body>
+    <div id="app">
+      <header id="hud" class="hidden" aria-live="polite">
+        <div id="hud-left">
+          <span id="hud-score">Score: 0</span>
+          <span id="hud-lives">Lives: 5</span>
+          <span id="hud-status"></span>
+        </div>
+        <button type="button" id="exit-btn">Back to map</button>
+      </header>
+
+      <div id="stage">
+        <div id="map"></div>
+        <canvas id="game-canvas" class="hidden"></canvas>
+
+        <header id="search-bar">
+          <form id="search-form" autocomplete="off">
+            <input
+              id="search-input"
+              type="search"
+              placeholder="Search a place…"
+              aria-label="Search OpenStreetMap"
+            />
+            <button type="submit" id="search-btn">Go</button>
+          </form>
+          <p id="hint">Find a street grid, then press Play</p>
+        </header>
+
+        <div id="toast" class="hidden" role="status"></div>
+
+        <button type="button" id="play-fab" title="Play on these streets" aria-label="Start Street Dots">
+          <svg viewBox="0 0 64 64" width="40" height="40" aria-hidden="true">
+            <circle cx="32" cy="32" r="28" fill="#121a2e" />
+            <path d="M44 32 L22 44 L28 32 L22 20 Z" fill="#ffd400" stroke="#1a1400" stroke-width="2" stroke-linejoin="round"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
