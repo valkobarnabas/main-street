@@ -9,9 +9,11 @@ import {
 } from "./geo";
 
 const SNAP = 8;
-const CONNECT = 22;
+const CONNECT = 42;
 const STUB_MIN_LENGTH = 32;
 const GRID = CONNECT;
+/** Pull near-rim dead-ends onto the play rectangle so wraps register. */
+const EDGE_PROMOTE = 36;
 
 export type RawGraph = {
   nodes: Map<number, GraphNode>;
@@ -234,13 +236,17 @@ function nearbyEdgeIds(
 
 /**
  * Link dead-ends that stop short of nearby streets (batched, spatially indexed).
+ * Also snaps stubs to nearby junction nodes — common when zoomed in on OSM gaps.
  */
 export function connectNearMisses(g: RawGraph, rect: Rect): RawGraph {
   const { nodes, edges, adj } = g;
   const degree = (id: number) => (adj.get(id) ?? []).length;
 
-  // Two passes is enough with a spatial index (was up to 100 full scans).
-  for (let pass = 0; pass < 2; pass++) {
+  // Prefer joining a stub directly into a nearby intersection node.
+  mergeLeavesIntoNearbyNodes(nodes, edges, adj, CONNECT);
+
+  // Several passes: each link can create new leaves / splits.
+  for (let pass = 0; pass < 4; pass++) {
     const grid = buildSegGrid(edges);
     type Cand = { nid: number; eid: number; hit: PolylineHit };
     const cands: Cand[] = [];
@@ -280,8 +286,9 @@ export function connectNearMisses(g: RawGraph, rect: Rect): RawGraph {
       usedNodes.add(c.nid);
       usedEdges.add(c.eid);
 
-      const endA = dist(c.hit.point, na) <= SNAP * 1.25;
-      const endB = dist(c.hit.point, nb) <= SNAP * 1.25;
+      const endSnap = SNAP * 1.75;
+      const endA = dist(c.hit.point, na) <= endSnap;
+      const endB = dist(c.hit.point, nb) <= endSnap;
       if (endA || endB) {
         const keep = endA ? target.a : target.b;
         if (keep !== c.nid) mergeNodes(nodes, edges, adj, c.nid, keep);
@@ -306,11 +313,90 @@ export function connectNearMisses(g: RawGraph, rect: Rect): RawGraph {
       applied++;
     }
 
+    mergeLeavesIntoNearbyNodes(nodes, edges, adj, CONNECT);
     if (applied === 0) break;
   }
 
+  promoteLeavesToBoundary(nodes, edges, adj, rect, EDGE_PROMOTE);
   pruneIsolated(nodes, adj);
   return { nodes, edges, adj };
+}
+
+/** Merge degree-1 stubs into a nearby node (real junction) when close enough. */
+function mergeLeavesIntoNearbyNodes(
+  nodes: Map<number, GraphNode>,
+  edges: Map<number, GraphEdge>,
+  adj: Map<number, number[]>,
+  maxDist: number,
+): void {
+  const degree = (id: number) => (adj.get(id) ?? []).length;
+  const leaves = [...nodes.keys()].filter((id) => degree(id) === 1);
+
+  for (const nid of leaves) {
+    if (!nodes.has(nid) || degree(nid) !== 1) continue;
+    const node = nodes.get(nid)!;
+    const eids = adj.get(nid) ?? [];
+    if (eids.length !== 1) continue;
+    const e = edges.get(eids[0]!);
+    if (!e) continue;
+    const other = e.a === nid ? e.b : e.a;
+
+    let best: number | null = null;
+    let bestD = maxDist;
+    for (const [oid, on] of nodes) {
+      if (oid === nid || oid === other) continue;
+      // Prefer real junctions (degree ≥ 2), not other floating stubs.
+      if (degree(oid) < 2) continue;
+      const d = dist(node, on);
+      if (d < bestD) {
+        bestD = d;
+        best = oid;
+      }
+    }
+    if (best != null) mergeNodes(nodes, edges, adj, nid, best);
+  }
+}
+
+/**
+ * Dead-ends that stop just short of the play rim are extended to the edge
+ * and marked as boundary so edge wraps work (and roads look complete).
+ */
+export function promoteLeavesToBoundary(
+  nodes: Map<number, GraphNode>,
+  edges: Map<number, GraphEdge>,
+  adj: Map<number, number[]>,
+  rect: Rect,
+  maxDist: number,
+): void {
+  for (const node of nodes.values()) {
+    if ((adj.get(node.id) ?? []).length !== 1) continue;
+
+    const dL = Math.abs(node.x - rect.minX);
+    const dR = Math.abs(node.x - rect.maxX);
+    const dB = Math.abs(node.y - rect.minY);
+    const dT = Math.abs(node.y - rect.maxY);
+    const m = Math.min(dL, dR, dB, dT);
+    if (m > maxDist && !node.onBoundary) continue;
+
+    let side: "left" | "right" | "top" | "bottom";
+    if (m === dL) {
+      node.x = rect.minX;
+      side = "left";
+    } else if (m === dR) {
+      node.x = rect.maxX;
+      side = "right";
+    } else if (m === dT) {
+      node.y = rect.maxY;
+      side = "top";
+    } else {
+      node.y = rect.minY;
+      side = "bottom";
+    }
+
+    node.onBoundary = true;
+    node.boundarySide = side;
+    updateIncidentPolylines(nodes, edges, adj, node.id);
+  }
 }
 
 function mergeNodes(
@@ -341,7 +427,7 @@ function mergeNodes(
   adj.delete(from);
 }
 
-/** Drop short dead-end spurs. */
+/** Drop short dead-end spurs (keep map-edge leaves for wraps). */
 export function pruneStubs(g: RawGraph, minLength = STUB_MIN_LENGTH): RawGraph {
   const { nodes, edges, adj } = g;
   const degree = (id: number) => (adj.get(id) ?? []).length;
@@ -354,6 +440,8 @@ export function pruneStubs(g: RawGraph, minLength = STUB_MIN_LENGTH): RawGraph {
       const da = degree(e.a);
       const db = degree(e.b);
       if (da !== 1 && db !== 1) continue;
+      const leaf = da === 1 ? e.a : e.b;
+      if (nodes.get(leaf)?.onBoundary) continue;
       removeEdge(edges, adj, eid);
       changed = true;
     }

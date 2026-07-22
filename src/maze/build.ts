@@ -17,8 +17,8 @@ export type BuildResult =
   | { ok: true; maze: MazeGraph; origin: LatLng; rect: Rect }
   | { ok: false; reason: string };
 
-/** Inset playable rect so road strokes stay inside the visible stage. */
-const EDGE_PAD_METERS = 10;
+/** Inset playable rect slightly so road strokes stay on-screen. */
+const EDGE_PAD_METERS = 2;
 
 export async function buildMaze(bounds: ViewBounds): Promise<BuildResult> {
   const sizeCheck = validateViewSize(bounds);
@@ -95,6 +95,8 @@ export async function buildMaze(bounds: ViewBounds): Promise<BuildResult> {
   g = simplifyGraph(g);
   g = connectNearMisses(g, rect);
   g = pruneStubs(g);
+  // Re-link after stub pruning; promote rim leaves onto the visible edge.
+  g = connectNearMisses(g, rect);
   g = largestComponent(g);
 
   const validation = validateGraph(g, rect);

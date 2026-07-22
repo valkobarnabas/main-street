@@ -79,7 +79,7 @@ export function clipPolyline(points: Vec2[], rect: Rect): Vec2[][] {
   return out;
 }
 
-export function snapToBoundary(p: Vec2, rect: Rect, eps = 0.75): Vec2 {
+export function snapToBoundary(p: Vec2, rect: Rect, eps = 2.5): Vec2 {
   let { x, y } = p;
   if (Math.abs(x - rect.minX) < eps) x = rect.minX;
   if (Math.abs(x - rect.maxX) < eps) x = rect.maxX;
@@ -93,7 +93,7 @@ export function snapToBoundary(p: Vec2, rect: Rect, eps = 0.75): Vec2 {
 export function classifyBoundary(
   p: Vec2,
   rect: Rect,
-  eps = 1.0,
+  eps = 3.0,
 ): "left" | "right" | "top" | "bottom" | null {
   const onLeft = Math.abs(p.x - rect.minX) <= eps;
   const onRight = Math.abs(p.x - rect.maxX) <= eps;
