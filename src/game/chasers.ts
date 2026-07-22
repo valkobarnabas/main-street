@@ -42,23 +42,57 @@ function cornerNode(
 export function createChasers(maze: MazeGraph): Chaser[] {
   const roles: ChaserRole[] = ["rusher", "sneaker", "trickster", "loafer"];
   const edges = [...maze.edges.values()];
+  const poses = pickSpreadPoses(maze, edges, roles.length, 45);
+
   return roles.map((role, i) => {
     const meta = CHASER_META[role];
-    const e = edges[(i * 3 + 1) % edges.length]!;
-    const pose: EdgePose = {
-      edgeId: e.id,
-      t: 0.3 + i * 0.1,
-      forward: i % 2 === 0,
-    };
     return {
       role,
       color: meta.color,
-      pose,
+      pose: poses[i]!,
       state: "scatter" as const,
       scatterNodeId: cornerNode(maze, meta.scatterCorner),
     };
   });
 }
+
+/** Random edge poses, preferring spots that aren't stacked on each other. */
+function pickSpreadPoses(
+  maze: MazeGraph,
+  edges: GraphEdgeLike[],
+  count: number,
+  minSep: number,
+): EdgePose[] {
+  const poses: EdgePose[] = [];
+  const maxAttempts = Math.max(40, count * 25);
+
+  for (let attempt = 0; attempt < maxAttempts && poses.length < count; attempt++) {
+    const e = edges[Math.floor(Math.random() * edges.length)]!;
+    const pose: EdgePose = {
+      edgeId: e.id,
+      t: 0.15 + Math.random() * 0.7,
+      forward: Math.random() < 0.5,
+    };
+    const p = poseWorld(maze, pose);
+    if (poses.every((other) => dist(p, poseWorld(maze, other)) >= minSep)) {
+      poses.push(pose);
+    }
+  }
+
+  // Fallback if the maze is too small to spread out.
+  while (poses.length < count) {
+    const e = edges[Math.floor(Math.random() * edges.length)]!;
+    poses.push({
+      edgeId: e.id,
+      t: 0.15 + Math.random() * 0.7,
+      forward: Math.random() < 0.5,
+    });
+  }
+
+  return poses;
+}
+
+type GraphEdgeLike = { id: number };
 
 function nearestNode(maze: MazeGraph, p: Vec2): number {
   let best = [...maze.nodes.keys()][0]!;

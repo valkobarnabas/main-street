@@ -3,16 +3,20 @@ import type { RawGraph } from "./graph";
 import { pointOnPolyline } from "./geo";
 
 const PELLET_SPACING = 12; // meters
+const POWER_MIN_SEP = 55; // meters between power dots
+
+function shuffleInPlace<T>(arr: T[]): void {
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const tmp = arr[i]!;
+    arr[i] = arr[j]!;
+    arr[j] = tmp;
+  }
+}
 
 export function placePellets(g: RawGraph): Pellet[] {
   const pellets: Pellet[] = [];
   let id = 1;
-
-  // Prefer power pellets at degree-1 dead ends
-  const deadEnds = new Set<number>();
-  for (const [nid, edges] of g.adj) {
-    if (edges.length === 1) deadEnds.add(nid);
-  }
 
   for (const e of g.edges.values()) {
     const count = Math.max(1, Math.floor(e.length / PELLET_SPACING));
@@ -31,47 +35,32 @@ export function placePellets(g: RawGraph): Pellet[] {
     }
   }
 
-  // Mark up to 4 power pellets near dead ends / far from center
-  let cx = 0;
-  let cy = 0;
-  let n = 0;
-  for (const node of g.nodes.values()) {
-    cx += node.x;
-    cy += node.y;
-    n++;
-  }
-  if (n > 0) {
-    cx /= n;
-    cy /= n;
-  }
-
-  const candidates = pellets
-    .map((p) => ({
-      p,
-      score:
-        (deadEnds.has(g.edges.get(p.edgeId)!.a) ||
-        deadEnds.has(g.edges.get(p.edgeId)!.b)
-          ? 40
-          : 0) + Math.hypot(p.x - cx, p.y - cy),
-    }))
-    .sort((a, b) => b.score - a.score);
-
+  // Scatter power dots randomly across the maze (with minimum spacing).
   const powerCount = Math.min(4, Math.max(2, Math.floor(pellets.length / 40)));
-  const chosen = new Set<number>();
-  for (const c of candidates) {
-    if (chosen.size >= powerCount) break;
-    // Keep power pellets spaced apart
-    let ok = true;
-    for (const oid of chosen) {
-      const o = pellets.find((x) => x.id === oid)!;
-      if (Math.hypot(c.p.x - o.x, c.p.y - o.y) < 40) {
-        ok = false;
-        break;
-      }
+  const order = pellets.map((_, i) => i);
+  shuffleInPlace(order);
+
+  const chosen: Pellet[] = [];
+  for (const idx of order) {
+    if (chosen.length >= powerCount) break;
+    const candidate = pellets[idx]!;
+    const farEnough = chosen.every(
+      (o) => Math.hypot(candidate.x - o.x, candidate.y - o.y) >= POWER_MIN_SEP,
+    );
+    if (farEnough) {
+      candidate.power = true;
+      chosen.push(candidate);
     }
-    if (ok) {
-      c.p.power = true;
-      chosen.add(c.p.id);
+  }
+
+  // If the map is tiny and spacing blocked us, fill remaining at random.
+  if (chosen.length < powerCount) {
+    for (const idx of order) {
+      if (chosen.length >= powerCount) break;
+      const candidate = pellets[idx]!;
+      if (candidate.power) continue;
+      candidate.power = true;
+      chosen.push(candidate);
     }
   }
 
