@@ -229,9 +229,8 @@ function enterFromPortal(
 
 /**
  * Pick the next edge at a junction.
- * - No input: stay on the exit closest to current heading (never U-turn).
- * - Arrow held/buffered: if any exit lies on that side of the car, take it
- *   (`consumedTurn`); otherwise keep going straightest-forward.
+ * - No input: stay on the most collinear continuation (never U-turn).
+ * - Arrow held/buffered: if a real side exit exists on that half of the car, take it.
  */
 function chooseOutgoing(
   maze: MazeGraph,
@@ -251,7 +250,14 @@ function chooseOutgoing(
 
   const poseOn = (eid: number): EdgePose => {
     const e = maze.edges.get(eid)!;
-    return { edgeId: eid, t: e.a === nodeId ? 0 : 1, forward: e.a === nodeId };
+    // Snap onto the node exactly so through-junction motion doesn't hitch.
+    const node = maze.nodes.get(nodeId)!;
+    if (e.a === nodeId) {
+      e.points[0] = { x: node.x, y: node.y };
+      return { edgeId: eid, t: 0, forward: true };
+    }
+    e.points[e.points.length - 1] = { x: node.x, y: node.y };
+    return { edgeId: eid, t: 1, forward: false };
   };
 
   const exitMeta = eids.map((eid) => {
@@ -264,9 +270,13 @@ function chooseOutgoing(
     };
   });
 
+  /** Prefer nearly collinear exits so "go straight" doesn't pick a fork. */
+  const STRAIGHT_MAX = 38;
   const pickStraightest = () => {
-    let best = exitMeta[0]!;
-    for (const m of exitMeta) {
+    const forwardish = exitMeta.filter((m) => m.forwardErr <= STRAIGHT_MAX);
+    const pool = forwardish.length > 0 ? forwardish : exitMeta;
+    let best = pool[0]!;
+    for (const m of pool) {
       if (m.forwardErr < best.forwardErr) best = m;
     }
     return { pose: poseOn(best.eid), consumedTurn: false };
@@ -278,11 +288,13 @@ function chooseOutgoing(
   const keySide = signedAngleDiff(facing, want);
 
   if (Math.abs(keySide) >= 150) return pickStraightest();
-  if (Math.abs(keySide) <= 25) return pickStraightest();
+  // Key mostly matches travel — stay on the straightest road.
+  if (Math.abs(keySide) <= 28) return pickStraightest();
 
   const wantRight = keySide < 0;
+  // Require a real side fork (|turn| ≥ 18°), not a 2° wiggle on the through road.
   const sideExits = exitMeta.filter((m) =>
-    wantRight ? m.turn < -1 : m.turn > 1,
+    wantRight ? m.turn <= -18 : m.turn >= 18,
   );
 
   if (sideExits.length === 0) return pickStraightest();
@@ -291,7 +303,7 @@ function chooseOutgoing(
   let bestToKey = angleDiff(best.brg, want);
   for (const m of sideExits) {
     const d = angleDiff(m.brg, want);
-    if (d < bestToKey || (d === bestToKey && m.forwardErr < best.forwardErr)) {
+    if (d < bestToKey || (d === bestToKey && Math.abs(m.turn) < Math.abs(best.turn))) {
       best = m;
       bestToKey = d;
     }

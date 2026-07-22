@@ -5,6 +5,7 @@ import {
   dist,
   polylineLength,
   splitPolylineAt,
+  angleDiff,
   type PolylineHit,
 } from "./geo";
 
@@ -14,6 +15,10 @@ const STUB_MIN_LENGTH = 32;
 const GRID = CONNECT;
 /** Pull near-rim dead-ends onto the play rectangle so wraps register. */
 const EDGE_PROMOTE = 36;
+/** Join grade-separated / overpass crossings that OSM doesn't share nodes for. */
+const CROSS_DIST = 22;
+const CROSS_MIN_ANGLE = 25;
+const CROSS_MAX_LINKS = 120;
 
 export type RawGraph = {
   nodes: Map<number, GraphNode>;
@@ -320,6 +325,272 @@ export function connectNearMisses(g: RawGraph, rect: Rect): RawGraph {
   promoteLeavesToBoundary(nodes, edges, adj, rect, EDGE_PROMOTE);
   pruneIsolated(nodes, adj);
   return { nodes, edges, adj };
+}
+
+/**
+ * Link roads that cross or nearly cross without a shared OSM node
+ * (overpasses, underpasses, digitizing gaps) so players can turn between them.
+ */
+export function linkGradeSeparations(g: RawGraph, rect: Rect): RawGraph {
+  const { nodes, edges, adj } = g;
+  let total = 0;
+
+  for (let pass = 0; pass < 3 && total < CROSS_MAX_LINKS; pass++) {
+    const grid = buildSegGrid(edges);
+    type Pair = {
+      e1: number;
+      e2: number;
+      hit1: PolylineHit;
+      hit2: PolylineHit;
+      dist: number;
+    };
+    const pairs: Pair[] = [];
+    const edgeList = [...edges.values()];
+
+    for (const e1 of edgeList) {
+      if (!edges.has(e1.id)) continue;
+      const near = new Set<number>();
+      for (const p of e1.points) {
+        for (const id of nearbyEdgeIds(grid, p)) {
+          if (id > e1.id) near.add(id);
+        }
+      }
+
+      for (const e2id of near) {
+        const e2 = edges.get(e2id);
+        if (!e2) continue;
+        if (
+          e1.a === e2.a ||
+          e1.a === e2.b ||
+          e1.b === e2.a ||
+          e1.b === e2.b
+        ) {
+          continue;
+        }
+
+        const approach = closestApproach(e1.points, e2.points);
+        if (approach.dist > CROSS_DIST) continue;
+
+        const ang = undirectedAngle(approach.dir1, approach.dir2);
+        if (ang < CROSS_MIN_ANGLE) continue; // parallel corridors — don't fuse
+
+        // Skip if the closest points are basically the existing endpoints.
+        const endish =
+          approach.hit1.dist < 0.01 &&
+          (approach.along1 < 3 || approach.along1 > e1.length - 3);
+        void endish;
+
+        pairs.push({
+          e1: e1.id,
+          e2: e2id,
+          hit1: approach.hit1,
+          hit2: approach.hit2,
+          dist: approach.dist,
+        });
+      }
+    }
+
+    pairs.sort((a, b) => a.dist - b.dist);
+    const used = new Set<number>();
+    let applied = 0;
+
+    for (const p of pairs) {
+      if (total >= CROSS_MAX_LINKS) break;
+      if (used.has(p.e1) || used.has(p.e2)) continue;
+      if (!edges.has(p.e1) || !edges.has(p.e2)) continue;
+
+      const junction = splitAndJoinCrossing(
+        nodes,
+        edges,
+        adj,
+        rect,
+        p.e1,
+        p.e2,
+        p.hit1,
+        p.hit2,
+      );
+      if (!junction) continue;
+      used.add(p.e1);
+      used.add(p.e2);
+      applied++;
+      total++;
+    }
+
+    if (applied === 0) break;
+  }
+
+  pruneIsolated(nodes, adj);
+  return { nodes, edges, adj };
+}
+
+function undirectedAngle(a: number, b: number): number {
+  const d = angleDiff(a, b);
+  return d > 90 ? 180 - d : d;
+}
+
+function bearingOf(a: Vec2, b: Vec2): number {
+  return (Math.atan2(b.y - a.y, b.x - a.x) * 180) / Math.PI;
+}
+
+function closestApproach(
+  pts1: Vec2[],
+  pts2: Vec2[],
+): {
+  dist: number;
+  hit1: PolylineHit;
+  hit2: PolylineHit;
+  dir1: number;
+  dir2: number;
+  along1: number;
+} {
+  let bestDist = Infinity;
+  let bestHit1: PolylineHit = {
+    point: pts1[0]!,
+    dist: Infinity,
+    segIndex: 0,
+    tSeg: 0,
+  };
+  let bestHit2: PolylineHit = {
+    point: pts2[0]!,
+    dist: Infinity,
+    segIndex: 0,
+    tSeg: 0,
+  };
+  let bestAlong1 = 0;
+
+  let along = 0;
+  for (let i = 0; i < pts1.length; i++) {
+    const p = pts1[i]!;
+    if (i > 0) along += dist(pts1[i - 1]!, p);
+    const hit = closestPointOnPolyline(p, pts2);
+    if (hit.dist < bestDist) {
+      bestDist = hit.dist;
+      bestHit1 = {
+        point: p,
+        dist: 0,
+        segIndex: Math.max(0, i - 1),
+        tSeg: i === 0 ? 0 : 1,
+      };
+      // Recompute hit1 properly as closest on pts1 to hit.point
+      const back = closestPointOnPolyline(hit.point, pts1);
+      bestHit1 = back;
+      bestHit2 = hit;
+      bestAlong1 = along;
+    }
+  }
+
+  along = 0;
+  for (let i = 0; i < pts2.length; i++) {
+    const p = pts2[i]!;
+    if (i > 0) along += dist(pts2[i - 1]!, p);
+    const hit = closestPointOnPolyline(p, pts1);
+    if (hit.dist < bestDist) {
+      bestDist = hit.dist;
+      const back = closestPointOnPolyline(hit.point, pts2);
+      bestHit2 = back;
+      bestHit1 = hit;
+      bestAlong1 = 0; // approximate
+    }
+  }
+
+  const s1a = pts1[bestHit1.segIndex]!;
+  const s1b = pts1[Math.min(bestHit1.segIndex + 1, pts1.length - 1)]!;
+  const s2a = pts2[bestHit2.segIndex]!;
+  const s2b = pts2[Math.min(bestHit2.segIndex + 1, pts2.length - 1)]!;
+
+  return {
+    dist: bestDist,
+    hit1: bestHit1,
+    hit2: bestHit2,
+    dir1: bearingOf(s1a, s1b),
+    dir2: bearingOf(s2a, s2b),
+    along1: bestAlong1,
+  };
+}
+
+function splitAndJoinCrossing(
+  nodes: Map<number, GraphNode>,
+  edges: Map<number, GraphEdge>,
+  adj: Map<number, number[]>,
+  rect: Rect,
+  e1id: number,
+  e2id: number,
+  hit1: PolylineHit,
+  hit2: PolylineHit,
+): number | null {
+  const e1 = edges.get(e1id);
+  const e2 = edges.get(e2id);
+  if (!e1 || !e2) return null;
+
+  const mid = {
+    x: (hit1.point.x + hit2.point.x) / 2,
+    y: (hit1.point.y + hit2.point.y) / 2,
+  };
+
+  // Don't invent a junction right on top of an existing endpoint.
+  const nearEnd = (e: GraphEdge, p: Vec2) => {
+    const na = nodes.get(e.a)!;
+    const nb = nodes.get(e.b)!;
+    return dist(p, na) <= SNAP * 1.5 || dist(p, nb) <= SNAP * 1.5;
+  };
+  if (nearEnd(e1, hit1.point) && nearEnd(e2, hit2.point)) {
+    // Prefer merging the closer endpoints instead.
+    const ends = [
+      { n: e1.a, p: nodes.get(e1.a)! },
+      { n: e1.b, p: nodes.get(e1.b)! },
+      { n: e2.a, p: nodes.get(e2.a)! },
+      { n: e2.b, p: nodes.get(e2.b)! },
+    ];
+    let bestA = ends[0]!;
+    let bestB = ends[2]!;
+    let bestD = Infinity;
+    for (const a of ends.slice(0, 2)) {
+      for (const b of ends.slice(2)) {
+        const d = dist(a.p, b.p);
+        if (d < bestD) {
+          bestD = d;
+          bestA = a;
+          bestB = b;
+        }
+      }
+    }
+    if (bestD <= CROSS_DIST && bestA.n !== bestB.n) {
+      mergeNodes(nodes, edges, adj, bestB.n, bestA.n);
+      return bestA.n;
+    }
+  }
+
+  const [l1, r1] = splitPolylineAt(e1.points, { ...hit1, point: mid });
+  const [l2, r2] = splitPolylineAt(e2.points, { ...hit2, point: mid });
+  const a1 = e1.a;
+  const b1 = e1.b;
+  const a2 = e2.a;
+  const b2 = e2.b;
+  removeEdge(edges, adj, e1id);
+  removeEdge(edges, adj, e2id);
+
+  const jid = nextId(nodes);
+  const side = classifyBoundary(mid, rect);
+  nodes.set(jid, {
+    id: jid,
+    x: mid.x,
+    y: mid.y,
+    onBoundary: side != null,
+    boundarySide: side,
+  });
+  adj.set(jid, []);
+
+  // Force endpoints onto the junction.
+  if (l1.length) l1[l1.length - 1] = { ...mid };
+  if (r1.length) r1[0] = { ...mid };
+  if (l2.length) l2[l2.length - 1] = { ...mid };
+  if (r2.length) r2[0] = { ...mid };
+
+  addEdgeRaw(edges, adj, a1, jid, l1);
+  addEdgeRaw(edges, adj, jid, b1, r1);
+  addEdgeRaw(edges, adj, a2, jid, l2);
+  addEdgeRaw(edges, adj, jid, b2, r2);
+  return jid;
 }
 
 /** Merge degree-1 stubs into a nearby node (real junction) when close enough. */

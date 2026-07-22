@@ -6,6 +6,7 @@ import {
   buildGraph,
   connectNearMisses,
   largestComponent,
+  linkGradeSeparations,
   pruneStubs,
   simplifyGraph,
 } from "./graph";
@@ -94,9 +95,11 @@ export async function buildMaze(bounds: ViewBounds): Promise<BuildResult> {
   let g = buildGraph(clipped, rect);
   g = simplifyGraph(g);
   g = connectNearMisses(g, rect);
+  g = linkGradeSeparations(g, rect);
   g = pruneStubs(g);
   // Re-link after stub pruning; promote rim leaves onto the visible edge.
   g = connectNearMisses(g, rect);
+  g = linkGradeSeparations(g, rect);
   g = largestComponent(g);
 
   const validation = validateGraph(g, rect);

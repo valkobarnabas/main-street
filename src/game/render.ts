@@ -1,5 +1,5 @@
 import type { Chaser, LatLng, MazeGraph, EdgePose } from "../types";
-import { unproject } from "../maze/geo";
+import { pointOnPolyline, unproject } from "../maze/geo";
 import { poseWorld } from "./movement";
 import {
   getAppearance,
@@ -64,6 +64,31 @@ function worldToScreen(
   return { sx: p.x, sy: p.y };
 }
 
+/** Facing from a short local sample along the current edge (avoids chord snaps at junctions). */
+function localTravelFacing(
+  map: L.Map,
+  origin: LatLng,
+  maze: MazeGraph,
+  pose: EdgePose,
+): number {
+  const e = maze.edges.get(pose.edgeId);
+  if (!e || e.points.length < 2) return 0;
+  const delta = Math.min(0.04, 4 / Math.max(e.length, 1));
+  const t0 = pose.t;
+  const t1 = pose.forward
+    ? Math.min(1, t0 + delta)
+    : Math.max(0, t0 - delta);
+  let a = pointOnPolyline(e.points, t0);
+  let b = pointOnPolyline(e.points, t1);
+  if (Math.hypot(b.x - a.x, b.y - a.y) < 0.05) {
+    a = pose.forward ? e.points[0]! : e.points[e.points.length - 1]!;
+    b = pose.forward ? e.points[1]! : e.points[e.points.length - 2]!;
+  }
+  const sa = worldToScreen(map, origin, a.x, a.y);
+  const sb = worldToScreen(map, origin, b.x, b.y);
+  return Math.atan2(sb.sy - sa.sy, sb.sx - sa.sx);
+}
+
 function strokeAll(
   ctx: CanvasRenderingContext2D,
   paths: Array<Array<{ sx: number; sy: number }>>,
@@ -120,12 +145,7 @@ export function drawFrame(
 
   const pp = poseWorld(maze, player);
   const ps = worldToScreen(map, origin, pp.x, pp.y);
-  const e = maze.edges.get(player.edgeId)!;
-  const from = player.forward ? e.points[0]! : e.points[e.points.length - 1]!;
-  const to = player.forward ? e.points[e.points.length - 1]! : e.points[0]!;
-  const screenFrom = worldToScreen(map, origin, from.x, from.y);
-  const screenTo = worldToScreen(map, origin, to.x, to.y);
-  const facing = Math.atan2(screenTo.sy - screenFrom.sy, screenTo.sx - screenFrom.sx);
+  const facing = localTravelFacing(map, origin, maze, player);
   drawPlayer(ctx, ps.sx, ps.sy, facing, 0.92 + pulse * 0.08, appearance);
 
   for (const g of chasers) {

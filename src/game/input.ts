@@ -10,6 +10,8 @@ export function createInput(): {
   detach: () => void;
   /** True while any movement key is physically held. */
   isHeld: () => boolean;
+  /** Use only currently held keys (no tap buffer). */
+  adoptHeldOnly: () => void;
 } {
   const state: InputState = { desired: null };
   const pressed = new Set<string>();
@@ -23,8 +25,9 @@ export function createInput(): {
       state.desired = "left";
     } else if (pressed.has("ArrowRight") || pressed.has("d") || pressed.has("D")) {
       state.desired = "right";
+    } else {
+      // Nothing held — leave buffer intact (one-tap queue) unless caller clears it.
     }
-    // If nothing is held, leave `desired` as a one-shot buffer for the next turn.
   };
 
   const onDown = (e: KeyboardEvent) => {
@@ -62,6 +65,14 @@ export function createInput(): {
   return {
     state,
     isHeld: () => pressed.size > 0,
+    /** Set desired from keys currently down; clear if none (no tap buffer). */
+    adoptHeldOnly: () => {
+      if (pressed.size === 0) {
+        state.desired = null;
+        return;
+      }
+      syncHeld();
+    },
     attach: () => {
       window.addEventListener("keydown", onDown);
       window.addEventListener("keyup", onUp);
