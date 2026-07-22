@@ -40,6 +40,11 @@ export function angleDiff(a: number, b: number): number {
   return Math.abs(d);
 }
 
+/** Signed turn from bearing `from` to `to` in (-180, 180]: left +, right −. */
+export function signedAngleDiff(from: number, to: number): number {
+  return ((to - from + 540) % 360) - 180;
+}
+
 export function desiredDirToBearing(dir: "up" | "down" | "left" | "right"): number {
   switch (dir) {
     case "right":

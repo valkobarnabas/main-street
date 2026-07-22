@@ -129,13 +129,17 @@ export function startGame(
 
     if (invuln > 0) invuln -= dt;
 
-    const { pose } = advancePose(
+    const { pose, consumedTurn } = advancePose(
       maze,
       player,
       PLAYER_SPEED * dt,
       input.state.desired,
     );
     player = pose;
+    // One-tap buffer: clear after the next successful side turn unless still held.
+    if (consumedTurn && !input.isHeld()) {
+      input.state.desired = null;
+    }
 
     const pp = poseWorld(maze, player);
     for (const pellet of maze.pellets) {

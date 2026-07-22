@@ -8,11 +8,13 @@ export function createInput(): {
   state: InputState;
   attach: () => void;
   detach: () => void;
+  /** True while any movement key is physically held. */
+  isHeld: () => boolean;
 } {
   const state: InputState = { desired: null };
   const pressed = new Set<string>();
 
-  const sync = () => {
+  const syncHeld = () => {
     if (pressed.has("ArrowUp") || pressed.has("w") || pressed.has("W")) {
       state.desired = "up";
     } else if (pressed.has("ArrowDown") || pressed.has("s") || pressed.has("S")) {
@@ -22,7 +24,7 @@ export function createInput(): {
     } else if (pressed.has("ArrowRight") || pressed.has("d") || pressed.has("D")) {
       state.desired = "right";
     }
-    // Keep last desired while key held; buffer last intent like arcade mazes
+    // If nothing is held, leave `desired` as a one-shot buffer for the next turn.
   };
 
   const onDown = (e: KeyboardEvent) => {
@@ -43,7 +45,6 @@ export function createInput(): {
     if (!keys.includes(e.key)) return;
     e.preventDefault();
     pressed.add(e.key);
-    // Always update desired on fresh press (buffering)
     if (e.key === "ArrowUp" || e.key === "w" || e.key === "W") state.desired = "up";
     else if (e.key === "ArrowDown" || e.key === "s" || e.key === "S")
       state.desired = "down";
@@ -55,11 +56,12 @@ export function createInput(): {
 
   const onUp = (e: KeyboardEvent) => {
     pressed.delete(e.key);
-    sync();
+    syncHeld();
   };
 
   return {
     state,
+    isHeld: () => pressed.size > 0,
     attach: () => {
       window.addEventListener("keydown", onDown);
       window.addEventListener("keyup", onUp);

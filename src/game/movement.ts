@@ -4,6 +4,7 @@ import {
   desiredDirToBearing,
   dist,
   pointOnPolyline,
+  signedAngleDiff,
 } from "../maze/geo";
 import { portalPartner } from "../maze/portals";
 
@@ -108,9 +109,10 @@ export function poseAtNode(
 }
 
 /**
- * Advance along the graph. Returns updated pose and whether a portal was used.
+ * Advance along the graph.
  * No U-turns mid-road or at junctions — reverse only at interior dead-ends.
  * Boundary dead-ends may wrap via portals.
+ * `consumedTurn` is true when a buffered arrow caused a real side turn.
  */
 export function advancePose(
   maze: MazeGraph,
@@ -118,10 +120,11 @@ export function advancePose(
   distance: number,
   desired: DesiredDir,
   turnThreshold = 75,
-): { pose: EdgePose; portalUsed: boolean } {
+): { pose: EdgePose; portalUsed: boolean; consumedTurn: boolean } {
   let remaining = distance;
   let cur = { ...pose };
   let portalUsed = false;
+  let consumedTurn = false;
   let guard = 0;
 
   while (remaining > 0 && guard++ < 20) {
@@ -162,9 +165,8 @@ export function advancePose(
       break;
     }
 
-    const next = chooseOutgoing(maze, hitNode, cur.edgeId, desired, turnThreshold);
-    if (!next) {
-      // No legal exit — reverse (shouldn't happen when degree > 1).
+    const picked = chooseOutgoing(maze, hitNode, cur.edgeId, desired, turnThreshold);
+    if (!picked) {
       cur = {
         edgeId: cur.edgeId,
         t: hitNode === e.a ? 0 : 1,
@@ -173,10 +175,11 @@ export function advancePose(
       remaining = 0;
       break;
     }
-    cur = next;
+    if (picked.consumedTurn) consumedTurn = true;
+    cur = picked.pose;
   }
 
-  return { pose: cur, portalUsed };
+  return { pose: cur, portalUsed, consumedTurn };
 }
 
 function enterFromPortal(
@@ -224,18 +227,23 @@ function enterFromPortal(
   return { edgeId: chosen, t: forward ? 0 : 1, forward };
 }
 
+/**
+ * Pick the next edge at a junction.
+ * - No input: stay on the exit closest to current heading (never U-turn).
+ * - Arrow held/buffered: if any exit lies on that side of the car, take it
+ *   (`consumedTurn`); otherwise keep going straightest-forward.
+ */
 function chooseOutgoing(
   maze: MazeGraph,
   nodeId: number,
   fromEdgeId: number,
   desired: DesiredDir,
   _turnThreshold: number,
-): EdgePose | null {
+): { pose: EdgePose; consumedTurn: boolean } | null {
   const eids = (maze.adj.get(nodeId) ?? []).filter((id) => id !== fromEdgeId);
   if (eids.length === 0) return null;
 
-  // Arrival bearing (direction we were traveling into the junction).
-  const arrivalBrg = edgeBearing(
+  const facing = edgeBearing(
     maze,
     fromEdgeId,
     !facingToward(maze, fromEdgeId, nodeId),
@@ -246,45 +254,49 @@ function chooseOutgoing(
     return { edgeId: eid, t: e.a === nodeId ? 0 : 1, forward: e.a === nodeId };
   };
 
-  // Prefer the most straightforward continuation whenever possible.
-  let straightEid = eids[0]!;
-  let straightDiff = Infinity;
-  for (const eid of eids) {
-    const d = angleDiff(exitBearing(maze, eid, nodeId), arrivalBrg);
-    if (d < straightDiff) {
-      straightDiff = d;
-      straightEid = eid;
-    }
-  }
+  const exitMeta = eids.map((eid) => {
+    const brg = exitBearing(maze, eid, nodeId);
+    return {
+      eid,
+      brg,
+      turn: signedAngleDiff(facing, brg),
+      forwardErr: angleDiff(brg, facing),
+    };
+  });
 
-  if (!desired) return poseOn(straightEid);
+  const pickStraightest = () => {
+    let best = exitMeta[0]!;
+    for (const m of exitMeta) {
+      if (m.forwardErr < best.forwardErr) best = m;
+    }
+    return { pose: poseOn(best.eid), consumedTurn: false };
+  };
+
+  if (!desired) return pickStraightest();
 
   const want = desiredDirToBearing(desired);
-  const straightBrg = exitBearing(maze, straightEid, nodeId);
-  const straightToWant = angleDiff(straightBrg, want);
+  const keySide = signedAngleDiff(facing, want);
 
-  // Never U-turn back onto the arrival road at a junction — only side exits
-  // or continue straight. (Dead-ends reverse in advancePose.)
-  const STRAIGHT_BIAS = 18;
-  let bestTurn: number | null = null;
-  let bestTurnToWant = Infinity;
-  for (const eid of eids) {
-    if (eid === straightEid) continue;
-    const d = angleDiff(exitBearing(maze, eid, nodeId), want);
-    if (d < bestTurnToWant) {
-      bestTurnToWant = d;
-      bestTurn = eid;
+  if (Math.abs(keySide) >= 150) return pickStraightest();
+  if (Math.abs(keySide) <= 25) return pickStraightest();
+
+  const wantRight = keySide < 0;
+  const sideExits = exitMeta.filter((m) =>
+    wantRight ? m.turn < -1 : m.turn > 1,
+  );
+
+  if (sideExits.length === 0) return pickStraightest();
+
+  let best = sideExits[0]!;
+  let bestToKey = angleDiff(best.brg, want);
+  for (const m of sideExits) {
+    const d = angleDiff(m.brg, want);
+    if (d < bestToKey || (d === bestToKey && m.forwardErr < best.forwardErr)) {
+      best = m;
+      bestToKey = d;
     }
   }
-
-  if (
-    bestTurn != null &&
-    bestTurnToWant + STRAIGHT_BIAS < straightToWant
-  ) {
-    return poseOn(bestTurn);
-  }
-
-  return poseOn(straightEid);
+  return { pose: poseOn(best.eid), consumedTurn: true };
 }
 
 export function actorsTouching(
