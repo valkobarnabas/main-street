@@ -1,4 +1,4 @@
-# Main Street Muncher
+# Main Street
 Turn any OpenStreetMap neighborhood into a playable street maze. Zoom to a dense grid, press **Play**, then control a car on the streets you selected. Collect the dots and dodge the traffic cones. Based off the 2015/17 Google Maps April Fools' Pac-Man games.
 
 ## How to play
