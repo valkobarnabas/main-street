@@ -149,6 +149,22 @@ function targetForChaser(
   }
 }
 
+function nodeAhead(maze: MazeGraph, pose: EdgePose): number {
+  const e = maze.edges.get(pose.edgeId)!;
+  return pose.forward ? e.b : e.a;
+}
+
+function nodeBehind(maze: MazeGraph, pose: EdgePose): number {
+  const e = maze.edges.get(pose.edgeId)!;
+  return pose.forward ? e.a : e.b;
+}
+
+/** Random reachable node — used while frightened so AI stays on the graph. */
+function randomNodeId(maze: MazeGraph): number {
+  const ids = [...maze.nodes.keys()];
+  return ids[Math.floor(Math.random() * ids.length)]!;
+}
+
 export function updateChaser(
   maze: MazeGraph,
   chaser: Chaser,
@@ -158,28 +174,42 @@ export function updateChaser(
   dt: number,
   speed: number,
 ): void {
-  const pos = poseWorld(maze, chaser.pose);
-  const fromNode = nearestNode(maze, pos);
-  const target = targetForChaser(maze, chaser, playerPose, mode, rusherPose);
+  const ahead = nodeAhead(maze, chaser.pose);
+  const behind = nodeBehind(maze, chaser.pose);
+  let target = targetForChaser(maze, chaser, playerPose, mode, rusherPose);
 
-  let desired: DesiredDir = null;
-  const hop = nextHop(maze, fromNode, target);
-  if (hop != null) desired = dirTowardNode(maze, pos, hop);
-  else desired = dirTowardNode(maze, pos, target);
-
-  if (chaser.state === "frightened" && Math.random() < 0.02) {
-    const dirs: DesiredDir[] = ["up", "down", "left", "right"];
-    desired = dirs[Math.floor(Math.random() * 4)]!;
+  // Frightened: occasionally pick a new wander target instead of a random
+  // screen direction (which caused mid-road oscillation / stuck cones).
+  if (chaser.state === "frightened" && Math.random() < 0.04) {
+    target = randomNodeId(maze);
   }
 
-  const { pose } = advancePose(maze, chaser.pose, speed * dt, desired, 90);
+  // Pathfind from the node we're already committed to — not nearestNode mid-edge,
+  // which often points behind the chaser and makes them jitter in place.
+  const hop = nextHop(maze, ahead, target);
+  let desired: DesiredDir;
+  if (hop == null) {
+    desired = dirTowardNode(maze, maze.nodes.get(ahead)!, target);
+  } else if (hop === behind) {
+    desired = dirTowardNode(maze, maze.nodes.get(ahead)!, behind);
+  } else {
+    // Keep traveling to `ahead`; desired encodes the turn to take on arrival.
+    desired = dirTowardNode(maze, maze.nodes.get(ahead)!, hop);
+  }
+
+  // Allow any turn at junctions so pathfinding isn't ignored on sharp corners.
+  const { pose } = advancePose(maze, chaser.pose, speed * dt, desired, 180);
   chaser.pose = pose;
 
   if (chaser.state === "eaten") {
-    if (nearestNode(maze, poseWorld(maze, chaser.pose)) === maze.homeNodeId) {
-      chaser.state = mode;
-      const homePose = poseAtNode(maze, maze.homeNodeId, null);
-      if (homePose) chaser.pose = homePose;
+    if (nodeAhead(maze, chaser.pose) === maze.homeNodeId || nodeBehind(maze, chaser.pose) === maze.homeNodeId) {
+      const atHome =
+        nearestNode(maze, poseWorld(maze, chaser.pose)) === maze.homeNodeId;
+      if (atHome) {
+        chaser.state = mode;
+        const homePose = poseAtNode(maze, maze.homeNodeId, null);
+        if (homePose) chaser.pose = homePose;
+      }
     }
   }
 }

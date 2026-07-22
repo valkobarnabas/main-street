@@ -107,6 +107,7 @@ export function startGame(
       if (frightTimer <= 0) {
         frightTimer = 0;
         endFrighten(chasers, mode);
+        if (status === "Power!") status = "";
       }
     } else if (modeTimer > (mode === "scatter" ? 7 : 20)) {
       mode = mode === "scatter" ? "chase" : "scatter";
