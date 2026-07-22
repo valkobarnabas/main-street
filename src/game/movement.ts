@@ -109,6 +109,8 @@ export function poseAtNode(
 
 /**
  * Advance along the graph. Returns updated pose and whether a portal was used.
+ * No U-turns mid-road or at junctions — reverse only at interior dead-ends.
+ * Boundary dead-ends may wrap via portals.
  */
 export function advancePose(
   maze: MazeGraph,
@@ -125,15 +127,6 @@ export function advancePose(
   while (remaining > 0 && guard++ < 20) {
     const e = maze.edges.get(cur.edgeId)!;
 
-    // Can reverse immediately if desired opposes current travel
-    if (desired) {
-      const travelBrg = edgeBearing(maze, cur.edgeId, cur.forward);
-      const want = desiredDirToBearing(desired);
-      if (angleDiff(travelBrg, want) > 180 - 25) {
-        cur.forward = !cur.forward;
-      }
-    }
-
     const nextT = cur.t + (cur.forward ? remaining / e.length : -remaining / e.length);
 
     if (nextT > 0 && nextT < 1) {
@@ -146,21 +139,32 @@ export function advancePose(
     const hitNode = nextT >= 1 ? e.b : e.a;
     const used = Math.abs((nextT >= 1 ? 1 - cur.t : cur.t) * e.length);
     remaining = Math.max(0, remaining - used);
+    const degree = (maze.adj.get(hitNode) ?? []).length;
 
-    // Dead-end wrap: always teleport (never reverse at a street end)
-    const portal = portalPartner(maze.portals, hitNode);
-    if (portal && (maze.adj.get(hitNode) ?? []).length <= 1) {
-      const nextPose = enterFromPortal(maze, portal.partnerId, desired);
-      if (nextPose) {
-        cur = nextPose;
-        portalUsed = true;
-        continue;
+    // Map-edge dead-end: wrap to the far side when a portal exists.
+    if (degree <= 1) {
+      const portal = portalPartner(maze.portals, hitNode);
+      if (portal) {
+        const nextPose = enterFromPortal(maze, portal.partnerId, desired);
+        if (nextPose) {
+          cur = nextPose;
+          portalUsed = true;
+          continue;
+        }
       }
+      // Interior stub (or failed wrap) — turn around on the same road.
+      cur = {
+        edgeId: cur.edgeId,
+        t: hitNode === e.a ? 0 : 1,
+        forward: hitNode === e.a,
+      };
+      remaining = 0;
+      break;
     }
 
     const next = chooseOutgoing(maze, hitNode, cur.edgeId, desired, turnThreshold);
     if (!next) {
-      // Dead end — reverse
+      // No legal exit — reverse (shouldn't happen when degree > 1).
       cur = {
         edgeId: cur.edgeId,
         t: hitNode === e.a ? 0 : 1,
@@ -259,15 +263,8 @@ function chooseOutgoing(
   const straightBrg = exitBearing(maze, straightEid, nodeId);
   const straightToWant = angleDiff(straightBrg, want);
 
-  // U-turn only when the key clearly points backward.
-  const reverseBrg = exitBearing(maze, fromEdgeId, nodeId);
-  const reverseToWant = angleDiff(reverseBrg, want);
-  if (reverseToWant + 15 < straightToWant && angleDiff(arrivalBrg, want) >= 120) {
-    return poseOn(fromEdgeId);
-  }
-
-  // Side roads: only leave the straight path when the held key matches a
-  // turn clearly better than continuing (straight wins ties / close calls).
+  // Never U-turn back onto the arrival road at a junction — only side exits
+  // or continue straight. (Dead-ends reverse in advancePose.)
   const STRAIGHT_BIAS = 18;
   let bestTurn: number | null = null;
   let bestTurnToWant = Infinity;
